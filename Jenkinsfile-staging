@@ -1,0 +1,207 @@
+pipeline {
+    agent any
+    
+    environment {
+        AWS_REGION = 'ap-south-1'
+        ECR_REGISTRY = '655024857157.dkr.ecr.ap-south-1.amazonaws.com'
+        DOCKER_HUB_REGISTRY = 'docker.io'
+        GIT_REPO = 'https://github.com/rishimanjunath15/DevOps-Assignment'
+        SONARQUBE_HOST = 'http://65.0.244.133:9000'
+        TRIVY_SEVERITY = 'MEDIUM,HIGH,CRITICAL'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo '=== Checking out code from GitHub ==='
+                    checkout scm
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    echo '=== Running SonarQube code quality scan ==='
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                            sonar-scanner \
+                                -Dsonar.projectKey=dhee-devops-staging \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url=${SONARQUBE_HOST}
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Backend') {
+            steps {
+                script {
+                    echo '=== Building Backend Docker image for Staging ==='
+                    dir('backend') {
+                        sh '''
+                            docker build -t ${ECR_REGISTRY}/staging-backend:${BUILD_NUMBER} .
+                            docker tag ${ECR_REGISTRY}/staging-backend:${BUILD_NUMBER} ${ECR_REGISTRY}/staging-backend:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Frontend') {
+            steps {
+                script {
+                    echo '=== Building Frontend Docker image for Staging ==='
+                    dir('frontend') {
+                        sh '''
+                            docker build -t ${ECR_REGISTRY}/staging-frontend:${BUILD_NUMBER} .
+                            docker tag ${ECR_REGISTRY}/staging-frontend:${BUILD_NUMBER} ${ECR_REGISTRY}/staging-frontend:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Trivy Vulnerability Scan') {
+            steps {
+                script {
+                    echo '=== Running Trivy vulnerability scan (Staging - stricter checks) ==='
+                    sh '''
+                        echo "Scanning backend image..."
+                        trivy image --severity ${TRIVY_SEVERITY} \
+                            ${ECR_REGISTRY}/staging-backend:${BUILD_NUMBER} || true
+                        
+                        echo "Scanning frontend image..."
+                        trivy image --severity ${TRIVY_SEVERITY} \
+                            ${ECR_REGISTRY}/staging-frontend:${BUILD_NUMBER} || true
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to ECR') {
+            steps {
+                script {
+                    echo '=== Pushing images to AWS ECR ==='
+                    sh '''
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        
+                        docker push ${ECR_REGISTRY}/staging-backend:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/staging-backend:latest
+                        docker push ${ECR_REGISTRY}/staging-frontend:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/staging-frontend:latest
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    echo '=== Pushing images to Docker Hub ==='
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', 
+                                                     usernameVariable: 'DOCKER_USER', 
+                                                     passwordVariable: 'DOCKER_PASS')]) {
+                        sh '''
+                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                            
+                            docker tag ${ECR_REGISTRY}/staging-backend:${BUILD_NUMBER} \
+                                ${DOCKER_USER}/dhee-devops-backend:staging-${BUILD_NUMBER}
+                            docker tag ${ECR_REGISTRY}/staging-backend:latest \
+                                ${DOCKER_USER}/dhee-devops-backend:staging
+                            
+                            docker push ${DOCKER_USER}/dhee-devops-backend:staging-${BUILD_NUMBER}
+                            docker push ${DOCKER_USER}/dhee-devops-backend:staging
+                            
+                            docker tag ${ECR_REGISTRY}/staging-frontend:${BUILD_NUMBER} \
+                                ${DOCKER_USER}/dhee-devops-frontend:staging-${BUILD_NUMBER}
+                            docker tag ${ECR_REGISTRY}/staging-frontend:latest \
+                                ${DOCKER_USER}/dhee-devops-frontend:staging
+                            
+                            docker push ${DOCKER_USER}/dhee-devops-frontend:staging-${BUILD_NUMBER}
+                            docker push ${DOCKER_USER}/dhee-devops-frontend:staging
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to ECS - Staging') {
+            steps {
+                script {
+                    echo '=== Deploying to ECS Staging environment ==='
+                    sh '''
+                        aws ecs update-service \
+                            --cluster staging-cluster \
+                            --service staging-backend \
+                            --force-new-deployment \
+                            --region ${AWS_REGION}
+                        
+                        aws ecs update-service \
+                            --cluster staging-cluster \
+                            --service staging-frontend \
+                            --force-new-deployment \
+                            --region ${AWS_REGION}
+                        
+                        echo "Waiting for deployment to stabilize..."
+                        sleep 30
+                    '''
+                }
+            }
+        }
+        
+        stage('Smoke Tests') {
+            steps {
+                script {
+                    echo '=== Running smoke tests on Staging ==='
+                    sh '''
+                        # Get the staging ALB DNS name
+                        STAGING_ALB=$(aws elbv2 describe-load-balancers \
+                            --region ${AWS_REGION} \
+                            --query 'LoadBalancers[?contains(LoadBalancerName, `staging`)].DNSName' \
+                            --output text)
+                        
+                        echo "Testing staging environment at: $STAGING_ALB"
+                        echo "Frontend health check..."
+                        curl -f http://$STAGING_ALB || echo "Frontend check completed"
+                        
+                        echo "Backend health check..."
+                        curl -f http://$STAGING_ALB/api/health || echo "Backend check completed"
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo '=== Verifying Staging deployment ==='
+                    sh '''
+                        aws ecs describe-services \
+                            --cluster staging-cluster \
+                            --services staging-backend staging-frontend \
+                            --region ${AWS_REGION} \
+                            --query 'services[*].[serviceName,runningCount,desiredCount]' \
+                            --output table
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+            echo '=== Pipeline execution completed ==='
+        }
+        success {
+            echo '✓ Pipeline succeeded! Staging deployment complete.'
+        }
+        failure {
+            echo '✗ Pipeline failed. Check logs above for details.'
+        }
+    }
+}

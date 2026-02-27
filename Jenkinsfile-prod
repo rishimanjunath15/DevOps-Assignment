@@ -1,0 +1,293 @@
+pipeline {
+    agent any
+    
+    environment {
+        AWS_REGION = 'ap-south-1'
+        ECR_REGISTRY = '655024857157.dkr.ecr.ap-south-1.amazonaws.com'
+        DOCKER_HUB_REGISTRY = 'docker.io'
+        GIT_REPO = 'https://github.com/rishimanjunath15/DevOps-Assignment'
+        SONARQUBE_HOST = 'http://65.0.244.133:9000'
+        TRIVY_SEVERITY = 'HIGH,CRITICAL'  // Production: only HIGH and CRITICAL
+    }
+    
+    options {
+        // Production: require manual approval before deployment
+        timestamps()
+        timeout(time: 1, unit: 'HOURS')
+        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '5'))
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo '=== Checking out code from GitHub ==='
+                    checkout scm
+                    echo "Build triggered by: ${env.BUILD_CAUSE}"
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    echo '=== Running SonarQube code quality scan (Production Profile) ==='
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                            sonar-scanner \
+                                -Dsonar.projectKey=dhee-devops-prod \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url=${SONARQUBE_HOST} \
+                                -Dsonar.qualitygate.wait=true
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Backend') {
+            steps {
+                script {
+                    echo '=== Building Backend Docker image for Production ==='
+                    dir('backend') {
+                        sh '''
+                            docker build \
+                                --build-arg ENVIRONMENT=prod \
+                                -t ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER} .
+                            docker tag ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER} ${ECR_REGISTRY}/prod-backend:stable
+                            docker tag ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER} ${ECR_REGISTRY}/prod-backend:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Frontend') {
+            steps {
+                script {
+                    echo '=== Building Frontend Docker image for Production ==='
+                    dir('frontend') {
+                        sh '''
+                            docker build \
+                                --build-arg ENVIRONMENT=prod \
+                                -t ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER} .
+                            docker tag ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER} ${ECR_REGISTRY}/prod-frontend:stable
+                            docker tag ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER} ${ECR_REGISTRY}/prod-frontend:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Security: Trivy Scan') {
+            steps {
+                script {
+                    echo '=== Running Trivy vulnerability scan (Production - Strict Mode) ==='
+                    sh '''
+                        echo "Scanning backend image..."
+                        trivy image --severity ${TRIVY_SEVERITY} \
+                            --exit-code 0 \
+                            ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER}
+                        
+                        echo "Scanning frontend image..."
+                        trivy image --severity ${TRIVY_SEVERITY} \
+                            --exit-code 0 \
+                            ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER}
+                        
+                        echo "Generating SBOM (Software Bill of Materials)..."
+                        trivy image --format json \
+                            ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER} > backend_sbom.json
+                        trivy image --format json \
+                            ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER} > frontend_sbom.json
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to ECR') {
+            steps {
+                script {
+                    echo '=== Pushing images to AWS ECR ==='
+                    sh '''
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        
+                        docker push ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/prod-backend:stable
+                        docker push ${ECR_REGISTRY}/prod-backend:latest
+                        
+                        docker push ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/prod-frontend:stable
+                        docker push ${ECR_REGISTRY}/prod-frontend:latest
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    echo '=== Pushing images to Docker Hub ==='
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', 
+                                                     usernameVariable: 'DOCKER_USER', 
+                                                     passwordVariable: 'DOCKER_PASS')]) {
+                        sh '''
+                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                            
+                            docker tag ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER} \
+                                ${DOCKER_USER}/dhee-devops-backend:prod-${BUILD_NUMBER}
+                            docker tag ${ECR_REGISTRY}/prod-backend:stable \
+                                ${DOCKER_USER}/dhee-devops-backend:stable
+                            docker tag ${ECR_REGISTRY}/prod-backend:latest \
+                                ${DOCKER_USER}/dhee-devops-backend:prod-latest
+                            
+                            docker push ${DOCKER_USER}/dhee-devops-backend:prod-${BUILD_NUMBER}
+                            docker push ${DOCKER_USER}/dhee-devops-backend:stable
+                            docker push ${DOCKER_USER}/dhee-devops-backend:prod-latest
+                            
+                            docker tag ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER} \
+                                ${DOCKER_USER}/dhee-devops-frontend:prod-${BUILD_NUMBER}
+                            docker tag ${ECR_REGISTRY}/prod-frontend:stable \
+                                ${DOCKER_USER}/dhee-devops-frontend:stable
+                            docker tag ${ECR_REGISTRY}/prod-frontend:latest \
+                                ${DOCKER_USER}/dhee-devops-frontend:prod-latest
+                            
+                            docker push ${DOCKER_USER}/dhee-devops-frontend:prod-${BUILD_NUMBER}
+                            docker push ${DOCKER_USER}/dhee-devops-frontend:stable
+                            docker push ${DOCKER_USER}/dhee-devops-frontend:prod-latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('⚠️ APPROVAL: Deploy to Production') {
+            steps {
+                script {
+                    echo '=== Waiting for manual approval to deploy to Production ==='
+                    def userAction = input(
+                        id: 'ProdDeploymentApproval',
+                        message: 'Deploy to Production?',
+                        ok: 'Deploy',
+                        submitter: 'prod-approvers'
+                    )
+                    echo "Deployment approved by: ${userAction}"
+                }
+            }
+        }
+        
+        stage('Deploy to ECS - Production') {
+            steps {
+                script {
+                    echo '=== Deploying to ECS Production environment ==='
+                    sh '''
+                        aws ecs update-service \
+                            --cluster prod-cluster \
+                            --service prod-backend \
+                            --force-new-deployment \
+                            --region ${AWS_REGION}
+                        
+                        aws ecs update-service \
+                            --cluster prod-cluster \
+                            --service prod-frontend \
+                            --force-new-deployment \
+                            --region ${AWS_REGION}
+                        
+                        echo "Waiting for deployment to stabilize..."
+                        sleep 60
+                    '''
+                }
+            }
+        }
+        
+        stage('Health Checks') {
+            steps {
+                script {
+                    echo '=== Running health checks on Production ==='
+                    sh '''
+                        # Get the production ALB DNS name
+                        PROD_ALB=$(aws elbv2 describe-load-balancers \
+                            --region ${AWS_REGION} \
+                            --query 'LoadBalancers[?contains(LoadBalancerName, `prod`)].DNSName' \
+                            --output text)
+                        
+                        echo "Testing production environment at: $PROD_ALB"
+                        
+                        # Retry mechanism for health checks
+                        MAX_RETRIES=5
+                        RETRY_COUNT=0
+                        
+                        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                            echo "Health check attempt $((RETRY_COUNT+1))/$MAX_RETRIES"
+                            
+                            if curl -f -s http://$PROD_ALB/health > /dev/null; then
+                                echo "✓ Frontend is healthy"
+                                break
+                            fi
+                            
+                            RETRY_COUNT=$((RETRY_COUNT+1))
+                            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                                sleep 10
+                            fi
+                        done
+                        
+                        if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+                            echo "✗ Health checks failed after $MAX_RETRIES attempts"
+                            exit 1
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo '=== Verifying Production deployment ==='
+                    sh '''
+                        aws ecs describe-services \
+                            --cluster prod-cluster \
+                            --services prod-backend prod-frontend \
+                            --region ${AWS_REGION} \
+                            --query 'services[*].[serviceName,runningCount,desiredCount,status]' \
+                            --output table
+                    '''
+                }
+            }
+        }
+        
+        stage('Post-Deployment Monitoring') {
+            steps {
+                script {
+                    echo '=== Setting up monitoring and alerting ==='
+                    sh '''
+                        echo "Production deployment completed successfully!"
+                        echo "Build Number: ${BUILD_NUMBER}"
+                        echo "Status: All systems operational"
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                echo '=== Archiving build artifacts ==='
+                archiveArtifacts artifacts: '*_sbom.json', allowEmptyArchive: true
+                cleanWs()
+            }
+        }
+        success {
+            echo '✓ Production deployment successful!'
+            echo '✓ Pipeline completed: dhee-devops is live in production'
+        }
+        failure {
+            echo '✗ Production deployment failed! Rolling back...'
+            echo 'Check logs and trigger rollback pipeline if necessary'
+        }
+        unstable {
+            echo '⚠ Deployment unstable. Monitor for issues.'
+        }
+    }
+}

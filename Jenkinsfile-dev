@@ -1,0 +1,185 @@
+pipeline {
+    agent any
+    
+    environment {
+        AWS_REGION = 'ap-south-1'
+        ECR_REGISTRY = '655024857157.dkr.ecr.ap-south-1.amazonaws.com'
+        DOCKER_HUB_REGISTRY = 'docker.io'
+        GIT_REPO = 'https://github.com/rishimanjunath15/DevOps-Assignment'
+        SONARQUBE_HOST = 'http://65.0.244.133:9000'
+        TRIVY_SEVERITY = 'HIGH,CRITICAL'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo '=== Checking out code from GitHub ==='
+                    checkout scm
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    echo '=== Running SonarQube code quality scan ==='
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                            sonar-scanner \
+                                -Dsonar.projectKey=dhee-devops-dev \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url=${SONARQUBE_HOST}
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Backend') {
+            steps {
+                script {
+                    echo '=== Building Backend Docker image ==='
+                    dir('backend') {
+                        sh '''
+                            docker build -t ${ECR_REGISTRY}/dev-backend:${BUILD_NUMBER} .
+                            docker tag ${ECR_REGISTRY}/dev-backend:${BUILD_NUMBER} ${ECR_REGISTRY}/dev-backend:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Frontend') {
+            steps {
+                script {
+                    echo '=== Building Frontend Docker image ==='
+                    dir('frontend') {
+                        sh '''
+                            docker build -t ${ECR_REGISTRY}/dev-frontend:${BUILD_NUMBER} .
+                            docker tag ${ECR_REGISTRY}/dev-frontend:${BUILD_NUMBER} ${ECR_REGISTRY}/dev-frontend:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Trivy Vulnerability Scan') {
+            steps {
+                script {
+                    echo '=== Running Trivy vulnerability scan ==='
+                    sh '''
+                        echo "Scanning backend image..."
+                        trivy image --severity ${TRIVY_SEVERITY} \
+                            ${ECR_REGISTRY}/dev-backend:${BUILD_NUMBER} || true
+                        
+                        echo "Scanning frontend image..."
+                        trivy image --severity ${TRIVY_SEVERITY} \
+                            ${ECR_REGISTRY}/dev-frontend:${BUILD_NUMBER} || true
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to ECR') {
+            steps {
+                script {
+                    echo '=== Pushing images to AWS ECR ==='
+                    sh '''
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        
+                        docker push ${ECR_REGISTRY}/dev-backend:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/dev-backend:latest
+                        docker push ${ECR_REGISTRY}/dev-frontend:${BUILD_NUMBER}
+                        docker push ${ECR_REGISTRY}/dev-frontend:latest
+                    '''
+                }
+            }
+        }
+        
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    echo '=== Pushing images to Docker Hub ==='
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', 
+                                                     usernameVariable: 'DOCKER_USER', 
+                                                     passwordVariable: 'DOCKER_PASS')]) {
+                        sh '''
+                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                            
+                            docker tag ${ECR_REGISTRY}/dev-backend:${BUILD_NUMBER} \
+                                ${DOCKER_USER}/dhee-devops-backend:dev-${BUILD_NUMBER}
+                            docker tag ${ECR_REGISTRY}/dev-backend:latest \
+                                ${DOCKER_USER}/dhee-devops-backend:latest
+                            
+                            docker push ${DOCKER_USER}/dhee-devops-backend:dev-${BUILD_NUMBER}
+                            docker push ${DOCKER_USER}/dhee-devops-backend:latest
+                            
+                            docker tag ${ECR_REGISTRY}/dev-frontend:${BUILD_NUMBER} \
+                                ${DOCKER_USER}/dhee-devops-frontend:dev-${BUILD_NUMBER}
+                            docker tag ${ECR_REGISTRY}/dev-frontend:latest \
+                                ${DOCKER_USER}/dhee-devops-frontend:latest
+                            
+                            docker push ${DOCKER_USER}/dhee-devops-frontend:dev-${BUILD_NUMBER}
+                            docker push ${DOCKER_USER}/dhee-devops-frontend:latest
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to ECS - Dev') {
+            steps {
+                script {
+                    echo '=== Deploying to ECS Dev environment ==='
+                    sh '''
+                        aws ecs update-service \
+                            --cluster dev-cluster \
+                            --service dev-backend \
+                            --force-new-deployment \
+                            --region ${AWS_REGION}
+                        
+                        aws ecs update-service \
+                            --cluster dev-cluster \
+                            --service dev-frontend \
+                            --force-new-deployment \
+                            --region ${AWS_REGION}
+                        
+                        echo "Waiting for deployment to stabilize..."
+                        sleep 30
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo '=== Verifying deployment ==='
+                    sh '''
+                        aws ecs describe-services \
+                            --cluster dev-cluster \
+                            --services dev-backend dev-frontend \
+                            --region ${AWS_REGION} \
+                            --query 'services[*].[serviceName,runningCount,desiredCount]' \
+                            --output table
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+            echo '=== Pipeline execution completed ==='
+        }
+        success {
+            echo '✓ Pipeline succeeded! Dev deployment complete.'
+        }
+        failure {
+            echo '✗ Pipeline failed. Check logs above for details.'
+        }
+    }
+}
