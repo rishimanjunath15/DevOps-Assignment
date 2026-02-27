@@ -1,5 +1,9 @@
 pipeline {
     agent any
+
+    triggers {
+        githubPush()
+    }
     
     environment {
         AWS_REGION = 'ap-south-1'
