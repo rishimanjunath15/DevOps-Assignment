@@ -34,7 +34,9 @@ pipeline {
                                 sonar-scanner \
                                     -Dsonar.projectKey=dhee-devops-staging \
                                     -Dsonar.sources=. \
-                                    -Dsonar.token=${SONAR_TOKEN}
+                                    -Dsonar.token=${SONAR_TOKEN} \
+                                    -Dsonar.exclusions=**/*.js,**/*.jsx,**/*.ts,**/*.tsx,**/node_modules/** \
+                                    -Dsonar.python.version=3
                             '''
                         }
                     }

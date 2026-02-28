@@ -43,6 +43,8 @@ pipeline {
                                     -Dsonar.projectKey=dhee-devops-prod \
                                     -Dsonar.sources=. \
                                     -Dsonar.token=${SONAR_TOKEN} \
+                                    -Dsonar.exclusions=**/*.js,**/*.jsx,**/*.ts,**/*.tsx,**/node_modules/** \
+                                    -Dsonar.python.version=3 \
                                     -Dsonar.qualitygate.wait=true
                             '''
                         }
