@@ -136,34 +136,36 @@ pipeline {
             steps {
                 script {
                     echo '=== Pushing images to Docker Hub ==='
-                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', 
-                                                     usernameVariable: 'DOCKER_USER', 
-                                                     passwordVariable: 'DOCKER_PASS')]) {
-                        sh '''
-                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                            
-                            docker tag ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER} \
-                                ${DOCKER_USER}/dhee-devops-backend:prod-${BUILD_NUMBER}
-                            docker tag ${ECR_REGISTRY}/prod-backend:stable \
-                                ${DOCKER_USER}/dhee-devops-backend:stable
-                            docker tag ${ECR_REGISTRY}/prod-backend:latest \
-                                ${DOCKER_USER}/dhee-devops-backend:prod-latest
-                            
-                            docker push ${DOCKER_USER}/dhee-devops-backend:prod-${BUILD_NUMBER}
-                            docker push ${DOCKER_USER}/dhee-devops-backend:stable
-                            docker push ${DOCKER_USER}/dhee-devops-backend:prod-latest
-                            
-                            docker tag ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER} \
-                                ${DOCKER_USER}/dhee-devops-frontend:prod-${BUILD_NUMBER}
-                            docker tag ${ECR_REGISTRY}/prod-frontend:stable \
-                                ${DOCKER_USER}/dhee-devops-frontend:stable
-                            docker tag ${ECR_REGISTRY}/prod-frontend:latest \
-                                ${DOCKER_USER}/dhee-devops-frontend:prod-latest
-                            
-                            docker push ${DOCKER_USER}/dhee-devops-frontend:prod-${BUILD_NUMBER}
-                            docker push ${DOCKER_USER}/dhee-devops-frontend:stable
-                            docker push ${DOCKER_USER}/dhee-devops-frontend:prod-latest
-                        '''
+                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                        withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', 
+                                                         usernameVariable: 'DOCKER_USER', 
+                                                         passwordVariable: 'DOCKER_PASS')]) {
+                            sh '''
+                                echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                                
+                                docker tag ${ECR_REGISTRY}/prod-backend:${BUILD_NUMBER} \
+                                    ${DOCKER_USER}/dhee-devops-backend:prod-${BUILD_NUMBER}
+                                docker tag ${ECR_REGISTRY}/prod-backend:stable \
+                                    ${DOCKER_USER}/dhee-devops-backend:stable
+                                docker tag ${ECR_REGISTRY}/prod-backend:latest \
+                                    ${DOCKER_USER}/dhee-devops-backend:prod-latest
+                                
+                                docker push ${DOCKER_USER}/dhee-devops-backend:prod-${BUILD_NUMBER}
+                                docker push ${DOCKER_USER}/dhee-devops-backend:stable
+                                docker push ${DOCKER_USER}/dhee-devops-backend:prod-latest
+                                
+                                docker tag ${ECR_REGISTRY}/prod-frontend:${BUILD_NUMBER} \
+                                    ${DOCKER_USER}/dhee-devops-frontend:prod-${BUILD_NUMBER}
+                                docker tag ${ECR_REGISTRY}/prod-frontend:stable \
+                                    ${DOCKER_USER}/dhee-devops-frontend:stable
+                                docker tag ${ECR_REGISTRY}/prod-frontend:latest \
+                                    ${DOCKER_USER}/dhee-devops-frontend:prod-latest
+                                
+                                docker push ${DOCKER_USER}/dhee-devops-frontend:prod-${BUILD_NUMBER}
+                                docker push ${DOCKER_USER}/dhee-devops-frontend:stable
+                                docker push ${DOCKER_USER}/dhee-devops-frontend:prod-latest
+                            '''
+                        }
                     }
                 }
             }

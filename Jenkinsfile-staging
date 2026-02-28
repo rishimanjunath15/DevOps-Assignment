@@ -110,28 +110,30 @@ pipeline {
             steps {
                 script {
                     echo '=== Pushing images to Docker Hub ==='
-                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', 
-                                                     usernameVariable: 'DOCKER_USER', 
-                                                     passwordVariable: 'DOCKER_PASS')]) {
-                        sh '''
-                            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                            
-                            docker tag ${ECR_REGISTRY}/staging-backend:${BUILD_NUMBER} \
-                                ${DOCKER_USER}/dhee-devops-backend:staging-${BUILD_NUMBER}
-                            docker tag ${ECR_REGISTRY}/staging-backend:latest \
-                                ${DOCKER_USER}/dhee-devops-backend:staging
-                            
-                            docker push ${DOCKER_USER}/dhee-devops-backend:staging-${BUILD_NUMBER}
-                            docker push ${DOCKER_USER}/dhee-devops-backend:staging
-                            
-                            docker tag ${ECR_REGISTRY}/staging-frontend:${BUILD_NUMBER} \
-                                ${DOCKER_USER}/dhee-devops-frontend:staging-${BUILD_NUMBER}
-                            docker tag ${ECR_REGISTRY}/staging-frontend:latest \
-                                ${DOCKER_USER}/dhee-devops-frontend:staging
-                            
-                            docker push ${DOCKER_USER}/dhee-devops-frontend:staging-${BUILD_NUMBER}
-                            docker push ${DOCKER_USER}/dhee-devops-frontend:staging
-                        '''
+                    catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                        withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', 
+                                                         usernameVariable: 'DOCKER_USER', 
+                                                         passwordVariable: 'DOCKER_PASS')]) {
+                            sh '''
+                                echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                                
+                                docker tag ${ECR_REGISTRY}/staging-backend:${BUILD_NUMBER} \
+                                    ${DOCKER_USER}/dhee-devops-backend:staging-${BUILD_NUMBER}
+                                docker tag ${ECR_REGISTRY}/staging-backend:latest \
+                                    ${DOCKER_USER}/dhee-devops-backend:staging
+                                
+                                docker push ${DOCKER_USER}/dhee-devops-backend:staging-${BUILD_NUMBER}
+                                docker push ${DOCKER_USER}/dhee-devops-backend:staging
+                                
+                                docker tag ${ECR_REGISTRY}/staging-frontend:${BUILD_NUMBER} \
+                                    ${DOCKER_USER}/dhee-devops-frontend:staging-${BUILD_NUMBER}
+                                docker tag ${ECR_REGISTRY}/staging-frontend:latest \
+                                    ${DOCKER_USER}/dhee-devops-frontend:staging
+                                
+                                docker push ${DOCKER_USER}/dhee-devops-frontend:staging-${BUILD_NUMBER}
+                                docker push ${DOCKER_USER}/dhee-devops-frontend:staging
+                            '''
+                        }
                     }
                 }
             }
