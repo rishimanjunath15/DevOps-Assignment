@@ -178,8 +178,7 @@ pipeline {
                     def userAction = input(
                         id: 'ProdDeploymentApproval',
                         message: 'Deploy to Production?',
-                        ok: 'Deploy',
-                        submitter: 'prod-approvers'
+                        ok: 'Deploy'
                     )
                     echo "Deployment approved by: ${userAction}"
                 }
